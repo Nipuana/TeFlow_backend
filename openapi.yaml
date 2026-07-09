@@ -1,0 +1,312 @@
+openapi: 3.1.0
+info:
+  title: Teflow API
+  version: 1.0.0
+  description: >
+    Teflow backend API. This document is the SOURCE OF TRUTH for every route
+    (API9: Improper Inventory Management). Any route registered under
+    /api/v1 must appear here; CI should fail if they drift.
+servers:
+  - url: /api/v1
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+            requestId: { type: string }
+    Tokens:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+    Task:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        status: { type: string, enum: [todo, in_progress, blocked, done] }
+        priority: { type: string, enum: [low, normal, high, critical] }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      summary: Register a user and provision their organization (as owner)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name, orgName]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10 }
+                name: { type: string }
+                orgName: { type: string }
+      responses:
+        '201': { description: Created }
+        '409': { description: Conflict }
+  /auth/login:
+    post:
+      summary: Log in (optionally with MFA code)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                mfaCode: { type: string }
+      responses:
+        '200': { description: OK }
+        '401': { description: Invalid credentials or MFA required }
+  /auth/refresh:
+    post:
+      summary: Rotate refresh token and issue a new access token
+      security: []
+      responses:
+        '200': { description: OK }
+        '401': { description: Invalid/expired/reused token }
+  /auth/logout:
+    post:
+      summary: Revoke the current refresh token
+      security: []
+      responses: { '204': { description: No Content } }
+  /auth/me:
+    get:
+      summary: Current authenticated user
+      responses: { '200': { description: OK } }
+  /auth/step-up:
+    post:
+      summary: Step-up re-authentication for sensitive flows (API6)
+      responses: { '200': { description: OK } }
+  /auth/mfa/enrol:
+    post:
+      summary: Begin TOTP MFA enrolment (returns secret + otpauth URI)
+      responses: { '200': { description: OK } }
+  /auth/mfa/confirm:
+    post:
+      summary: Confirm and activate MFA with a TOTP code
+      responses: { '200': { description: OK } }
+  /auth/change-password:
+    post:
+      summary: Change password (revokes all old sessions, issues a fresh one; clears mustChangePassword)
+      responses: { '200': { description: OK — returns a new accessToken }, '400': { description: New password reused }, '401': { description: Current password incorrect } }
+  /auth/sessions:
+    get:
+      summary: List the caller's active sessions (flags the current one)
+      responses: { '200': { description: OK } }
+  /auth/sessions/sign-out-others:
+    post:
+      summary: Revoke all of the caller's sessions except the current one
+      responses: { '200': { description: OK } }
+  /auth/sessions/{id}:
+    delete:
+      summary: Revoke one session (must belong to the caller, else 404 — API1)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '204': { description: No Content }, '404': { description: Not found } }
+  /auth/me (PATCH):
+    patch:
+      summary: Update own profile (allow-listed name/bio/avatarUrl; avatar SSRF-guarded)
+      responses: { '200': { description: OK }, '400': { description: Blocked URL / invalid field } }
+  /auth/me/avatar:
+    post:
+      summary: Upload a profile picture (multipart/form-data, field "avatar"; multer + magic-byte validation, size-capped)
+      responses: { '200': { description: OK }, '400': { description: Not an image / too large }, '413': { description: Too large } }
+    get:
+      summary: Serve the caller's own profile picture (Bearer-auth'd image bytes)
+      responses: { '200': { description: image/png|jpeg|gif }, '404': { description: No avatar set } }
+
+  /notifications:
+    get:
+      summary: List the caller's own notifications (per-user scoped, API1)
+      responses: { '200': { description: OK } }
+  /notifications/read-all:
+    post:
+      summary: Mark all of the caller's notifications read
+      responses: { '200': { description: OK } }
+  /notifications/{id}/read:
+    post:
+      summary: Mark one notification read (must belong to the caller, else 404)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK }, '404': { description: Not found } }
+
+  /orgs:
+    get:
+      summary: List organizations the caller belongs to
+      responses: { '200': { description: OK } }
+  /orgs/{orgId}:
+    get:
+      summary: Get an organization (members only)
+      parameters: [{ name: orgId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK }, '404': { description: Not found } }
+    patch:
+      summary: Update org settings (admin+)
+      parameters: [{ name: orgId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK }, '403': { description: Forbidden } }
+  /orgs/{orgId}/members:
+    get:
+      summary: List org members (includes pendingPasswordChange status)
+      parameters: [{ name: orgId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK } }
+    post:
+      summary: Owner provisions a new account (employee/manager/admin) with a one-time temporary password
+      parameters: [{ name: orgId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '201': { description: Created — returns member + temporaryPassword (shown once) }, '403': { description: Not owner }, '409': { description: Email already in use } }
+  /orgs/{orgId}/members/{userId}/temp-password:
+    get:
+      summary: Owner re-views an account's unused temporary password (or learns it was already changed)
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: "OK — { changed, temporaryPassword|null } (AES-GCM-sealed at rest, cleared once the user sets their own password)" }, '403': { description: Not owner }, '404': { description: Member not found } }
+  /orgs/{orgId}/members/{userId}/reset-password:
+    post:
+      summary: Owner resets a member's password (issues a fresh temporary password, revokes their sessions)
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: OK — returns temporaryPassword }, '403': { description: Not owner }, '404': { description: Member not found } }
+  /orgs/{orgId}/members/{userId}:
+    delete:
+      summary: Remove a member from the org (admin+; owner and self are protected)
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: OK }, '403': { description: Forbidden }, '404': { description: Member not found } }
+  /orgs/{orgId}/members/role:
+    put:
+      summary: Set a member's role (admin+; owner required to grant admin; owner role not assignable)
+      parameters: [{ name: orgId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK }, '403': { description: Forbidden } }
+
+  /projects:
+    get:
+      summary: List projects (manager+ see all org projects; others only projects they are on — API1)
+      responses: { '200': { description: OK } }
+    post:
+      summary: Create a project (manager+)
+      responses: { '201': { description: Created }, '403': { description: Forbidden } }
+  /projects/{projectId}:
+    get:
+      summary: Get a project (object-level authz, API1)
+      parameters: [{ name: projectId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK }, '404': { description: Not found } }
+    patch:
+      summary: Update a project (manager+)
+      parameters: [{ name: projectId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK } }
+    delete:
+      summary: Delete a project (admin+)
+      parameters: [{ name: projectId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '204': { description: No Content } }
+
+  /projects/{projectId}/tasks:
+    get:
+      summary: List tasks in a project
+      parameters: [{ name: projectId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK } }
+    post:
+      summary: Create a task (employee+ on the project team; fields allow-listed, API3)
+      parameters: [{ name: projectId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '201': { description: Created } }
+  /projects/{projectId}/tasks/bulk:
+    post:
+      summary: Bulk-create tasks (max 50, API4)
+      parameters: [{ name: projectId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '201': { description: Created } }
+  /projects/{projectId}/tasks/{taskId}:
+    get:
+      summary: Get a task
+      parameters:
+        - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: OK }, '404': { description: Not found } }
+    patch:
+      summary: Update a task (allow-listed fields, API3)
+      parameters:
+        - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '200': { description: OK } }
+    delete:
+      summary: Delete a task (employee+ on the project team)
+      parameters:
+        - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { '204': { description: No Content } }
+  /projects/{projectId}/tasks/{taskId}/comments:
+    get: { summary: List comments, responses: { '200': { description: OK } } }
+    post: { summary: Add a comment, responses: { '201': { description: Created } } }
+  /projects/{projectId}/tasks/{taskId}/attachments:
+    get: { summary: List attachments, responses: { '200': { description: OK } } }
+    post:
+      summary: Upload an attachment (size/type capped, API4)
+      responses: { '201': { description: Created }, '413': { description: Too large } }
+
+  /integrations/webhooks:
+    get: { summary: List webhooks, responses: { '200': { description: OK } } }
+    post:
+      summary: Register a webhook (URL SSRF-validated, API7)
+      responses: { '201': { description: Created }, '400': { description: Blocked URL } }
+  /integrations/webhooks/{webhookId}/test:
+    post:
+      summary: Trigger a test delivery (SSRF re-validated, API7)
+      parameters: [{ name: webhookId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: OK } }
+  /integrations/avatar-from-url:
+    post:
+      summary: Fetch an avatar from a URL (SSRF-guarded, image sniffed, API7)
+      responses: { '200': { description: OK }, '400': { description: Blocked or non-image } }
+  /integrations/consume:
+    post:
+      summary: Call an allow-listed third-party API; response schema-validated (API10)
+      responses: { '200': { description: OK }, '400': { description: Validation failed } }
+
+  /billing:
+    get:
+      summary: View billing/plan (admin+)
+      responses: { '200': { description: OK }, '403': { description: Forbidden } }
+  /billing/upgrade:
+    post:
+      summary: Upgrade plan (owner + step-up re-auth, API5/API6)
+      responses: { '200': { description: OK }, '403': { description: Step-up required } }
+  /billing/invite:
+    post:
+      summary: Invite a teammate (admin+, rate-limited, anomaly-flagged, API6)
+      responses: { '201': { description: Created }, '429': { description: Anomaly/limit } }
+  /billing/export:
+    post:
+      summary: Export org data as CSV (admin+, rate-limited, API4/API6)
+      responses: { '200': { description: OK } }
+  /billing/org:
+    delete:
+      summary: Delete the organization (owner + step-up, API5/API6)
+      responses: { '200': { description: OK }, '403': { description: Step-up required } }
